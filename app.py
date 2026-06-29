@@ -162,7 +162,7 @@ def get_crypto_panel(coin_name):
 
     reply_text = (
         f"{coin}/USDT 數據面板 📘\n"
-        f"━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"即時交易價:\t\t${price:.4f}\n"
         f"合約資金費率:\t\t{funding_rate:+.4f}%\n\n"
         f"【期貨合約大戶動態情緒】\n"
@@ -184,7 +184,7 @@ def get_crypto_panel(coin_name):
         f"48小時  {d_48h}\n"
         f"72小時  {d_72h}\n"
         f"168小時 {d_168h}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"【{flow_title}】\n"
         f"5分鐘   {n_5m}\n"
         f"15分鐘  {n_15m}\n"
@@ -197,7 +197,7 @@ def get_crypto_panel(coin_name):
         f"48小時  {n_48h}\n"
         f"72小時  {n_72h}\n"
         f"168小時 {n_168h}\n"
-        f"━━━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━"
     )
     return reply_text
 
