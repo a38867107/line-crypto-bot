@@ -23,6 +23,7 @@ def fetch_binance_futures_data(url, params=None):
         return None
 
 def get_crypto_panel(coin_name):
+    # 🌟 核心優化：進來直接強制轉大寫，並拔除前後空格
     coin = coin_name.upper().strip()
     symbol_usdt = f"{coin}USDT"
     
@@ -47,7 +48,7 @@ def get_crypto_panel(coin_name):
     if isinstance(oi_res, dict) and "openInterest" in oi_res:
         binance_oi_usd = float(oi_res.get("openInterest", 0)) * price
 
-    # 🌟 升級版：智能動態單位轉換器 (支援 Billions 且防止符號亂跑)
+    # 智能動態單位轉換器 (支援 Billions 且防止符號亂跑)
     def fmt_val(val_usd, with_sign=False):
         if val_usd == 0:
             return "$0.00"
@@ -74,10 +75,10 @@ def get_crypto_panel(coin_name):
         total_oi_usd = binance_oi_usd
         b_p, by_p, ok_p, bg_p = 100.0, 0.0, 0.0, 0.0
 
-    distribution_text = f" 🔸 Binance\t│  {fmt_val(total_oi_usd * (b_p/100))} ({b_p:.1f}%)\n"
-    if by_p > 0: distribution_text += f" 🔸 Bybit\t│  {fmt_val(total_oi_usd * (by_p/100))} ({by_p:.1f}%)\n"
-    if ok_p > 0: distribution_text += f" 🔸 Okex\t\t│  {fmt_val(total_oi_usd * (ok_p/100))} ({ok_p:.1f}%)\n"
-    if bg_p > 0: distribution_text += f" 🔸 Bitget\t│  {fmt_val(total_oi_usd * (bg_p/100))} ({bg_p:.1f}%)\n"
+    distribution_text = f"Binance\t\t{fmt_val(total_oi_usd * (b_p/100))} ({b_p:.1f}%)\n"
+    if by_p > 0: distribution_text += f"Bybit\t\t{fmt_val(total_oi_usd * (by_p/100))} ({by_p:.1f}%)\n"
+    if ok_p > 0: distribution_text += f"Okex\t\t{fmt_val(total_oi_usd * (ok_p/100))} ({ok_p:.1f}%)\n"
+    if bg_p > 0: distribution_text += f"Bitget\t\t{fmt_val(total_oi_usd * (bg_p/100))} ({bg_p:.1f}%)\n"
 
     # 4. 抓取幣安真實大戶多空比、人數比
     acc_ratio, pos_ratio = 1.0, 1.0
@@ -96,9 +97,9 @@ def get_crypto_panel(coin_name):
     def gen_bar(long_p):
         bars = int(long_p / 10)
         bars = max(1, min(9, bars))
-        return "🟩" * bars + "🟥" * (10 - bars)
+        return "█" * bars + "░" * (10 - bars)
 
-    # 5. 擴充歷史持倉數據 (拉高 limit 以完全覆蓋至 168h)
+    # 5. 抓取歷史持倉數據 (5m, 1h, 4h 級別)
     hist_5m = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "5m", "limit": 15})
     hist_1h = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "1h", "limit": 30})
     hist_4h = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "4h", "limit": 50})
@@ -117,19 +118,15 @@ def get_crypto_panel(coin_name):
                     bias = (pos_ratio - 1) / (pos_ratio + 1)
                     net_inflow = oi_diff * (0.6 + bias)
                     
-                    # 格式化輸出，確保間距對齊
+                    # 回歸純文字左對齊排版
                     oi_str = f"{fmt_val(scaled_hist_oi)}"
                     pct_str = f"({pct*100:+.2f}%)"
                     inflow_str = f"{fmt_val(net_inflow, True)}"
                     
-                    # 根據正負給予視覺小圓點
-                    oi_emoji = "🟢" if pct >= 0 else "🔴"
-                    net_emoji = "🟢" if net_inflow >= 0 else "🔴"
-                    
-                    return f"{oi_emoji} {oi_str:<9} {pct_str:>9}", f"{net_emoji} {inflow_str}"
+                    return f"{oi_str:<10} {pct_str:>9}", inflow_str
             except:
                 pass
-        return "⚪ ⏳ 計算中... ", "⚪ $0.00"
+        return "計算中...", "$0.00"
 
     # 完全對齊 11 大時間維度
     oi_5m, net_5m = get_oi_and_inflow(hist_5m, 1)
@@ -144,46 +141,44 @@ def get_crypto_panel(coin_name):
     oi_72h, net_72h = get_oi_and_inflow(hist_4h, 18)  # 4h * 18 = 72h
     oi_168h, net_168h = get_oi_and_inflow(hist_4h, 42) # 4h * 42 = 168h
 
-    # 資金費率正負色彩判定
-    fr_emoji = "🔴" if funding_rate < 0 else "🟢"
-
     reply_text = (
-        f"📊 {coin}/USDT 合約終端面板 📊\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"💰 最近交易價:\t${price:.4f}\n"
-        f"{fr_emoji} 資金費率:\t{funding_rate:+.4f}%\n\n"
-        f"🌐 交易所持倉分布 (全網估算)\n"
+        f"{coin}/USDT 合約：📘\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"最近交易價:\t\t${price:.4f}\n"
+        f"資金費率:\t\t{funding_rate:+.4f}%\n\n"
+        f"交易所持倉分布 (小於 1% 交易所不顯示)\n"
         f"{distribution_text}\n"
-        f"👥 即時大戶多空比 (帳戶數): {acc_ratio:.2f}\n"
-        f"多 {acc_long:.1f}% {gen_bar(acc_long)} {acc_short:.1f}% 空\n\n"
-        f"🔥 即時大戶多空比 (持倉量): {pos_ratio:.2f}\n"
-        f"多 {pos_long:.1f}% {gen_bar(pos_long)} {pos_short:.1f}% 空\n\n"
-        f"⏳ 持倉變化 (時間內總持倉) \n"
-        f"👑 當前總持倉: {fmt_val(total_oi_usd)}\n"
-        f" ⚡ 5分鐘\t│ {oi_5m}\n"
-        f" ⚡ 15分鐘\t│ {oi_15m}\n"
-        f" ⚡ 30分鐘\t│ {oi_30m}\n"
-        f" 🕒 1小時\t│ {oi_1h}\n"
-        f" 🕒 4小時\t│ {oi_4h}\n"
-        f" 🕒 8小時\t│ {oi_8h}\n"
-        f" 🕒 12小時\t│ {oi_12h}\n"
-        f" 📆 24小時\t│ {oi_24h}\n"
-        f" 📆 48小時\t│ {oi_48h}\n"
-        f" 📆 72小時\t│ {oi_72h}\n"
-        f" 📆 168小時\t│ {oi_168h}\n\n"
-        f"💧 真實主力淨流入 $\n"
-        f" ⚡ 5分鐘\t│ {net_5m}\n"
-        f" ⚡ 15分鐘\t│ {net_15m}\n"
-        f" ⚡ 30分鐘\t│ {net_30m}\n"
-        f" 🕒 1小時\t│ {net_1h}\n"
-        f" 🕒 4小時\t│ {net_4h}\n"
-        f" 🕒 8小時\t│ {net_8h}\n"
-        f" 🕒 12小時\t│ {net_12h}\n"
-        f" 📆 24小時\t│ {net_24h}\n"
-        f" 📆 48小時\t│ {net_48h}\n"
-        f" 📆 72小時\t│ {net_72h}\n"
-        f" 📆 168小時\t│ {net_168h}\n"
-        f"━━━━━━━━━━━━━━━━━"
+        f"即時大戶多空比 (帳戶數): {acc_ratio:.2f}\n"
+        f"多 {acc_long:.1f}% [{gen_bar(acc_long)}] {acc_short:.1f}% 空\n"
+        f"即時大戶多空比 (持倉量): {pos_ratio:.2f}\n"
+        f"多 {pos_long:.1f}% [{gen_bar(pos_long)}] {pos_short:.1f}% 空\n"
+        f"多空持倉人數比: {acc_ratio:.2f}\n"
+        f"多 {acc_long:.1f}% [{gen_bar(acc_long)}] {acc_short:.1f}% 空\n\n"
+        f"持倉變化 (時間內總持倉) | 總持倉: {fmt_val(total_oi_usd)}\n"
+        f"5分鐘\t\t{oi_5m}\n"
+        f"15分鐘\t\t{oi_15m}\n"
+        f"30分鐘\t\t{oi_30m}\n"
+        f"1小時\t\t{oi_1h}\n"
+        f"4小時\t\t{oi_4h}\n"
+        f"8小時\t\t{oi_8h}\n"
+        f"12小時\t\t{oi_12h}\n"
+        f"24小時\t\t{oi_24h}\n"
+        f"48小時\t\t{oi_48h}\n"
+        f"72小時\t\t{oi_72h}\n"
+        f"168小時\t\t{oi_168h}\n\n"
+        f"真實主力淨流入 $\n"
+        f"5分鐘\t\t{net_5m}\n"
+        f"15分鐘\t\t{net_15m}\n"
+        f"30分鐘\t\t{net_30m}\n"
+        f"1小時\t\t{net_1h}\n"
+        f"4小時\t\t{net_4h}\n"
+        f"8小時\t\t{net_8h}\n"
+        f"12小時\t\t{net_12h}\n"
+        f"24小時\t\t{net_24h}\n"
+        f"48小時\t\t{net_48h}\n"
+        f"72小時\t\t{net_72h}\n"
+        f"168小時\t\t{net_168h}\n"
+        f"━━━━━━━━━━━━━━━"
     )
     return reply_text
 
@@ -200,6 +195,7 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text.strip()
+    # 這裡原本限制只能純英文字母才發送
     if user_msg.isalpha():
         reply_msg = get_crypto_panel(user_msg)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_msg))
