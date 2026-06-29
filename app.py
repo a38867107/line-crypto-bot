@@ -74,7 +74,7 @@ def get_crypto_panel(coin_name):
             return "$0.00".rjust(width)
         sign = "+" if (with_sign and val_usd > 0) else ("-" if val_usd < 0 else "")
         abs_val = abs(val_usd)
-        
+
         if abs_val >= 1000000000:
             res_str = f"{sign}${abs_val / 1000000000:.2f}B"
         elif abs_val >= 1000000:
@@ -83,13 +83,13 @@ def get_crypto_panel(coin_name):
             res_str = f"{sign}${abs_val / 1000:.2f}K"
         else:
             res_str = f"{sign}${abs_val:.2f}"
-            
+
         return res_str.rjust(width)
 
     # 4. 根據現貨可用性切換數據流（現貨 K 線 vs 合約持倉歷史）
     data_type_title = "純現貨全面數據" if is_spot_available else "期貨合約數據"
     flow_title = "純現貨全面淨流入 (含大小單)" if is_spot_available else "合約主力持倉淨流入"
-    
+
     if is_spot_available:
         # 現貨模式：抓取現貨 K 線
         klines_5m = fetch_binance_data("https://api.binance.com/api/v3/klines", {"symbol": symbol, "interval": "5m", "limit": 12})
@@ -163,7 +163,7 @@ def get_crypto_panel(coin_name):
     # 🌟 使用等寬字元空間微調，確保 5分鐘 與 168小時 在手機端不論數據多長都能完美對齊
     reply_text = (
         f"{coin}/USDT 數據面板 📘\n"
-        f"━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"即時交易價:\t\t${price:.4f}\n"
         f"合約資金費率:\t\t{funding_rate:+.4f}%\n\n"
         f"【期貨合約大戶動態情緒】\n"
@@ -184,7 +184,8 @@ def get_crypto_panel(coin_name):
         f"24小時  │ {d_24h}\n"
         f"48小時  │ {d_48h}\n"
         f"72小時  │ {d_72h}\n"
-        f"168小時 │ {d_168h}\n\n"
+        f"168小時 │ {d_168h}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"【{flow_title}】\n"
         f"5分鐘   │ {n_5m}\n"
         f"15分鐘  │ {n_15m}\n"
@@ -197,7 +198,7 @@ def get_crypto_panel(coin_name):
         f"48小時  │ {n_48h}\n"
         f"72小時  │ {n_72h}\n"
         f"168小時 │ {n_168h}\n"
-        f"━━━━━━━━━━━━━━━"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     return reply_text
 
