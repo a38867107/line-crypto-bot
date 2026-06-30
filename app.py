@@ -7,11 +7,16 @@ from pathlib import Path
 import requests
 from flask import Flask, request, abort
 
+# 引入 LINE 官方提供的 SDK 元件，用來做安全驗證
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+
 app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CHAIN   = "ethereum"
-GL_BIN  = "/opt/render/project/src/gl" # 雲端 fallback
+GL_BIN  = "/opt/render/project/src/gl" 
 N_DEVS  = 5   
 
 REPOS = [
@@ -24,17 +29,21 @@ REPOS = [
 
 # ── LINE / Nansen Config ──────────────────────────────────────────────────────
 LINE_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET") # ✅ 補上了！
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
-# ── Nansen 核心邏輯 (與前面相同) ───────────────────────────────────────────────
+# 初始化 LINE SDK 套件
+line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET) # ✅ 使用 SECRET 來初始化安全防護罩
+
+# ── Nansen 核心邏輯 ───────────────────────────────────────────────────────────
 api_calls = []
 
 def nansen(subcmd: str) -> dict | None:
     cmd = f"nansen {subcmd}"
     api_calls.append(cmd)
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if r.returncode != 0:
-        return None
+    if r.returncode != 0: return None
     try:
         parsed = json.loads(r.stdout)
         if not parsed.get("success"):
@@ -148,9 +157,8 @@ def send_to_line(text_message: str):
     return res.status_code == 200
 
 def run_whale_tracking_logic():
-    """執行大戶追蹤並組裝訊息"""
     global api_calls
-    api_calls = [] # 重設計數器
+    api_calls = [] 
     
     line_report = []
     line_report.append("🐳 【Nansen 大戶建倉與聰明錢情報】")
@@ -176,7 +184,6 @@ def run_whale_tracking_logic():
     for i, t in enumerate(traders):
         addr  = t["address"]
         label = t["label"]
-        short = addr[:6] + "..." + addr[-4:]
         chain = t.get("chain", CHAIN)
         
         port_pts, portfolio_usd, overlap = profile_balance(addr, sm_tokens, chain)
@@ -215,28 +222,59 @@ def run_whale_tracking_logic():
 
 @app.route("/", methods=['GET'])
 def index():
-    # 讓 Render 檢查健康度用 (Health Check)，確保能成功部署不崩潰
     return "LINE Crypto Bot Server is running!", 200
 
 @app.route("/trigger", methods=['GET', 'POST'])
 def trigger_report():
-    """手動觸發路由：只要用瀏覽器打開網址 https://你的域名.render.com/trigger 
-    就會立刻執行追蹤，並把報告發到你的 LINE 手機上"""
     report_content = run_whale_tracking_logic()
     success = send_to_line(report_content)
     if success:
         return "✅ 大戶建倉情報已成功發送到你的 LINE 手機上！", 200
     else:
-        return "❌ 傳送失敗，請檢查 Render 上的環境變數設定。", 500
+        return "❌ 傳送失敗，請檢查 Render 上的環境變數設定與 User ID。", 500
 
 @app.route("/webhook", methods=['POST'])
 def callback():
-    """如果你未來想要實現：在 LINE 聊天室輸入「查大戶」，機器人就回覆訊息，
-    就在這裡寫你的 LINE Webhook 處理邏輯"""
-    # 這裡可以保留你原本的 Line Bot 簽章驗證與回覆代碼
+    """✅ 補上標準安全驗證邏輯：當用戶傳訊息給官方帳號時會觸發此處"""
+    signature = request.headers.get('X-Line-Signature', '')
+
+    # 取得請求內容的文字
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
+
+    # 💡 關鍵：這裡會印出完整的收到的訊息，你可以在 Render Logs 裡面看到 userId
+    print("🔔 收到 LINE Webhook JSON 數據：", body)
+
+    try:
+        # 利用 CHANNEL_SECRET 進行簽章驗證，確保訊息真的來自 LINE 官方
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+
     return 'OK', 200
 
+# 當有人傳送文字訊息給官方帳號時，會自動觸發這個區塊
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    # 這裡可以直接撈到傳訊息的人的 userId
+    user_id = event.source.user_id
+    user_message = event.message.text
+    
+    # 順便做個好玩的功能：如果你對官方帳號輸入「查大戶」，它也會自動觸發報告！
+    if user_message == "查大戶":
+        report_content = run_whale_tracking_logic()
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=report_content)
+        )
+    else:
+        # 如果打其他字，機器人會貼心提醒你你的 User ID 是多少
+        reply_text = f"你好！我收到你的訊息了。\n你的專屬 LINE User ID 為：\n\n{user_id}\n\n請把這串代碼複製並填入 Render 的 LINE_USER_ID 環境變數中！"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
+
 if __name__ == "__main__":
-    # Render 會自動給予 PORT 環境變數，預設監聽 0.0.0.0
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
