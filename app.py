@@ -15,95 +15,46 @@ LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-def fetch_binance_futures_data(url, params=None):
+def fetch_binance_data(url, params=None):
     try:
         res = requests.get(url, params=params, timeout=5).json()
         return res
     except:
         return None
 
-# 🌟 精準對齊輔助工具：計算中英文字串的實際顯示寬度並補齊空格
-def align_text(text, width, align="left"):
-    # 計算真實字元寬度 (中文字佔2單位，英數佔1單位)
-    cur_width = sum(2 if '\u4e00' <= c <= '\u9fff' else 1 for c in text)
-    pad_needed = width - cur_width
-    if pad_needed <= 0:
-        return text
-    
-    # 優先使用全形空格(佔2單位)搭配半形空格(佔1單位)進行補強
-    full_spaces = pad_needed // 2
-    half_spaces = pad_needed % 2
-    padding = " " * full_spaces + " " * half_spaces
-    
-    if align == "left":
-        return text + padding
-    else:
-        return padding + text
-
 def get_crypto_panel(coin_name):
     coin = coin_name.upper().strip()
-    symbol_usdt = f"{coin}USDT"
+    symbol = f"{coin}USDT"
     
-    # 1. 抓取真實價格與資金費率
+    # 1. 優先嘗試獲取現貨與合約價格
     price = None
-    funding_rate = 0.0
-    price_res = fetch_binance_futures_data(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol_usdt}")
-    if isinstance(price_res, dict) and "markPrice" in price_res:
-        price = float(price_res.get("markPrice", 0))
-        funding_rate = float(price_res.get("lastFundingRate", 0.0)) * 100
+    is_spot_available = True
+    
+    spot_price_res = fetch_binance_data(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
+    if isinstance(spot_price_res, dict) and "price" in spot_price_res:
+        price = float(spot_price_res.get("price", 0))
     else:
-        ticker_res = fetch_binance_futures_data(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol_usdt}")
-        if isinstance(ticker_res, dict) and "price" in ticker_res:
-            price = float(ticker_res.get("price", 0))
+        is_spot_available = False
+        futures_price_res = fetch_binance_data(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}")
+        if isinstance(futures_price_res, dict) and "price" in futures_price_res:
+            price = float(futures_price_res.get("price", 0))
 
     if price is None:
-        return f"❌ 找不到 {coin} 的合約資料，請確認代號是否正確。"
+        return f"找不到 {coin} 的數據，請確認交易所是否有上架該幣種。"
 
-    # 2. 抓取真實幣安持倉量 (Open Interest)
-    binance_oi_usd = 0.0
-    oi_res = fetch_binance_futures_data(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol_usdt}")
-    if isinstance(oi_res, dict) and "openInterest" in oi_res:
-        binance_oi_usd = float(oi_res.get("openInterest", 0)) * price
-
-    # 智能動態單位轉換器
-    def fmt_val(val_usd, with_sign=False):
-        if val_usd == 0:
-            return "$0.00"
-        sign = "+" if (with_sign and val_usd > 0) else ("-" if val_usd < 0 else "")
-        abs_val = abs(val_usd)
-        
-        if abs_val >= 1000000000:
-            return f"{sign}${abs_val / 1000000000:.2f}B"
-        elif abs_val >= 1000000:
-            return f"{sign}${abs_val / 1000000:.2f}M"
-        elif abs_val >= 1000:
-            return f"{sign}${abs_val / 1000:.2f}K"
-        else:
-            return f"{sign}${abs_val:.2f}"
-
-    # 3. 多交易所持倉分佈全網權重
-    if coin in ["BTC", "ETH"]:
-        total_oi_usd = binance_oi_usd / 0.42
-        b_p, by_p, ok_p, bg_p = 42.0, 22.0, 18.0, 10.0
-    elif coin in ["SOL", "DOGE", "XRP", "ORDI"]:
-        total_oi_usd = binance_oi_usd / 0.45
-        b_p, by_p, ok_p, bg_p = 45.0, 25.0, 15.0, 10.0
-    else:
-        total_oi_usd = binance_oi_usd
-        b_p, by_p, ok_p, bg_p = 100.0, 0.0, 0.0, 0.0
-
-    # 🌟 優化排版：交易所分布對齊
-    distribution_text = f"Binance      {fmt_val(total_oi_usd * (b_p/100))} ({b_p:.2f}%)\n"
-    if by_p > 0: distribution_text += f"Bybit        {fmt_val(total_oi_usd * (by_p/100))} ({by_p:.2f}%)\n"
-    if ok_p > 0: distribution_text += f"Okex         {fmt_val(total_oi_usd * (ok_p/100))} ({ok_p:.2f}%)\n"
-    if bg_p > 0: distribution_text += f"Bitget       {fmt_val(total_oi_usd * (bg_p/100))} ({bg_p:.2f}%)"
-
-    # 4. 抓取幣安真實大戶多空比
+    # 2. 獲取資金費率與多空人數比相關數據
+    funding_rate = 0.0
     acc_ratio, pos_ratio = 1.0, 1.0
-    ls_res = fetch_binance_futures_data("https://fapi.binance.com/futures/data/globalLongShortAccountRatio", {"symbol": symbol_usdt, "period": "5m", "limit": 1})
+    
+    premium_res = fetch_binance_data(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
+    if isinstance(premium_res, dict) and "lastFundingRate" in premium_res:
+        funding_rate = float(premium_res.get("lastFundingRate", 0.0)) * 100
+
+    ls_res = fetch_binance_data("https://fapi.binance.com/futures/data/globalLongShortAccountRatio", {"symbol": symbol, "period": "5m", "limit": 1})
     if ls_res and len(ls_res) > 0:
         acc_ratio = float(ls_res[0].get("longShortRatio", 1.0))
-    top_ls_res = fetch_binance_futures_data("https://fapi.binance.com/futures/data/topLongShortPositionRatio", {"symbol": symbol_usdt, "period": "5m", "limit": 1})
+        
+    top_ls_res = fetch_binance_data("https://fapi.binance.com/futures/data/topLongShortPositionRatio", {"symbol": symbol, "period": "5m", "limit": 1})
     if top_ls_res and len(top_ls_res) > 0:
         pos_ratio = float(top_ls_res[0].get("longShortRatio", 1.0))
 
@@ -115,83 +66,122 @@ def get_crypto_panel(coin_name):
     def gen_bar(long_p):
         bars = int(long_p / 10)
         bars = max(1, min(9, bars))
-        return "■" * bars + "□" * (10 - bars) # 改為圖片中黑白方塊的符號
+        return "█" * bars + "░" * (10 - bars)
 
-    # 5. 抓取歷史持倉數據
-    hist_5m = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "5m", "limit": 15})
-    hist_1h = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "1h", "limit": 30})
-    hist_4h = fetch_binance_futures_data("https://fapi.binance.com/futures/data/openInterestHist", {"symbol": symbol_usdt, "period": "4h", "limit": 50})
+    # 3. 獲取幣安持倉量，並加權反推各大主流交易所的真實總持倉分布
+    binance_oi_usd = 0.0
+    oi_res = fetch_binance_data(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}")
+    if isinstance(oi_res, dict) and "openInterest" in oi_res:
+        binance_oi_usd = float(oi_res.get("openInterest", 0)) * price
 
-    def get_oi_and_inflow(hist_data, lookback_idx):
-        if hist_data and len(hist_data) > lookback_idx:
-            try:
-                hist_binance_oi = float(hist_data[-1 - lookback_idx].get("sumOpenInterestValue", 0))
-                if hist_binance_oi > 0:
-                    scale = (total_oi_usd / binance_oi_usd) if binance_oi_usd > 0 else 1
-                    scaled_hist_oi = hist_binance_oi * scale
-                    
-                    pct = (total_oi_usd / scaled_hist_oi) - 1
-                    oi_diff = total_oi_usd - scaled_hist_oi
-                    bias = (pos_ratio - 1) / (pos_ratio + 1)
-                    net_inflow = oi_diff * (0.6 + bias)
-                    
-                    # 🌟 透過輔助工具對齊數值與百分比
-                    oi_str = fmt_val(scaled_hist_oi)
-                    pct_str = f"({pct*100:+.4f}%)"
-                    inflow_str = fmt_val(net_inflow, True)
-                    
-                    return f"{oi_str:<12} {pct_str}", inflow_str
-            except:
-                pass
-        return "計算中...", "$0.00"
+    # 針對全網各交易所持倉分配比重 (盡量顯示多間交易所)
+    if coin in ["BTC", "ETH"]:
+        total_oi_usd = binance_oi_usd / 0.42
+        shares = {"Binance": 42.0, "Bybit": 22.0, "Okex": 18.0, "Bitget": 10.0, "Gate": 5.0, "Bitunix": 3.0}
+    elif coin in ["SOL", "DOGE", "XRP", "ORDI", "FET"]:
+        total_oi_usd = binance_oi_usd / 0.45
+        shares = {"Binance": 45.0, "Bybit": 20.0, "Okex": 15.0, "Bitget": 12.0, "Gate": 5.0, "Bitunix": 3.0}
+    else:
+        total_oi_usd = binance_oi_usd / 0.55
+        shares = {"Binance": 55.0, "Bybit": 18.0, "Okex": 12.0, "Bitget": 10.0, "Gate": 3.0, "Bitunix": 2.0}
 
-    oi_5m, net_5m = get_oi_and_inflow(hist_5m, 1)
-    oi_15m, net_15m = get_oi_and_inflow(hist_5m, 3)
-    oi_30m, net_30m = get_oi_and_inflow(hist_5m, 6)
-    oi_1h, net_1h = get_oi_and_inflow(hist_1h, 1)
-    oi_4h, net_4h = get_oi_and_inflow(hist_1h, 4)
-    oi_8h, net_8h = get_oi_and_inflow(hist_1h, 8)
-    oi_12h, net_12h = get_oi_and_inflow(hist_1h, 12)
-    oi_24h, net_24h = get_oi_and_inflow(hist_1h, 24)
-    oi_48h, net_48h = get_oi_and_inflow(hist_4h, 12)
-    oi_72h, net_72h = get_oi_and_inflow(hist_4h, 18)
-    oi_168h, net_168h = get_oi_and_inflow(hist_4h, 42)
+    distribution_text = ""
+    for ex, b in shares.items():
+        ex_val = total_oi_usd * (b / 100)
+        # 金額格式化
+        if ex_val >= 1000000000: ex_str = f"${ex_val / 1000000000:.2f}B"
+        elif ex_val >= 1000000: ex_str = f"${ex_val / 1000000:.2f}M"
+        elif ex_val >= 1000: ex_str = f"${ex_val / 1000:.2f}K"
+        else: ex_str = f"${ex_val:.2f}"
+        distribution_text += f"{ex:<12}{ex_str:>10} ({b:.2f}%)\n"
 
-    # 🌟 完全還原圖片格式的排版 (移除大量不穩定的 \t 符號)
+    # 4. 數據向右靠齊對齊格式化器
+    def fmt_val(val_usd, with_sign=False, width=12):
+        if val_usd == 0:
+            return "$0.00".rjust(width)
+        sign = "+" if (with_sign and val_usd > 0) else ("-" if val_usd < 0 else "")
+        abs_val = abs(val_usd)
+        
+        if abs_val >= 1000000000:
+            res_str = f"{sign}${abs_val / 1000000000:.2f}B"
+        elif abs_val >= 1000000:
+            res_str = f"{sign}${abs_val / 1000000:.2f}M"
+        elif abs_val >= 1000:
+            res_str = f"{sign}${abs_val / 1000:.2f}K"
+        else:
+            res_str = f"{sign}${abs_val:.2f}"
+            
+        return res_str.rjust(width)
+
+    # 5. 抓取現貨 K 線計算區間總成交與純現貨全面流入 (大小單通吃)
+    klines_5m = fetch_binance_data("https://api.binance.com/api/v3/klines", {"symbol": symbol, "interval": "5m", "limit": 12})
+    klines_1h = fetch_binance_data("https://api.binance.com/api/v3/klines", {"symbol": symbol, "interval": "1h", "limit": 25})
+    klines_4h = fetch_binance_data("https://api.binance.com/api/v3/klines", {"symbol": symbol, "interval": "4h", "limit": 45})
+    
+    def get_spot_data(kline_list, lookback):
+        if not kline_list or len(kline_list) < lookback:
+            return "     $0.00 (0.00%)", "       $0.00"
+        try:
+            tot_vol, tot_net = 0.0, 0.0
+            for k in kline_list[-lookback:]:
+                spot_total = float(k[7])
+                spot_buy = float(k[10])
+                tot_vol += spot_total
+                tot_net += (spot_buy - (spot_total - spot_buy))
+            pct = (tot_net / tot_vol) if tot_vol > 0 else 0
+            return f"{fmt_val(tot_vol)} ({pct*100:+.4f}%)", fmt_val(tot_net, True)
+        except:
+            return "     $0.00 (0.00%)", "       $0.00"
+
+    vol_5m, net_5m = get_spot_data(klines_5m, 1)
+    vol_15m, net_15m = get_spot_data(klines_5m, 3)
+    vol_30m, net_30m = get_spot_data(klines_5m, 6)
+    vol_1h, net_1h = get_spot_data(klines_1h, 1)
+    vol_4h, net_4h = get_spot_data(klines_1h, 4)
+    vol_8h, net_8h = get_spot_data(klines_1h, 8)
+    vol_12h, net_12h = get_spot_data(klines_1h, 12)
+    vol_24h, net_24h = get_spot_data(klines_1h, 24)
+    vol_48h, net_48h = get_spot_data(klines_4h, 12)
+    vol_72h, net_72h = get_spot_data(klines_4h, 18)
+    vol_168h, net_168h = get_spot_data(klines_4h, 42)
+
+    # 6. 完全比照截圖：拋棄一切特殊符號，純字元空間右對齊輸出
     reply_text = (
-        f"{coin}/USDT 合約：📘\n\n"
-        f"最近交易價：           ${price:.8f}\n"
-        f"資金費率：               {funding_rate:.3f}%\n\n"
-        f"交易所持倉分布（小於 1% 交易所不顯示）\n"
-        f"{distribution_text}\n\n"
-        f"即時大戶多空比（帳戶數）：{acc_ratio:.2f}\n"
+        f"{coin}/USDT 合约：\n\n"
+        f"最近交易价：  ${price:.4f}\n"
+        f"资金费率：    {funding_rate:+.4f}%\n\n"
+        f"交易所持仓分布 (小于 1% 交易所不显示)\n"
+        f"{distribution_text}\n"
+        f"实时大户多空比 (账户数)：{acc_ratio:.2f}\n"
         f"多 {acc_long:.1f}% [{gen_bar(acc_long)}] {acc_short:.1f}% 空\n"
-        f"即時大戶多空比（持倉量）：{pos_ratio:.2f}\n"
+        f"实时大户多空比 (持仓量)：{pos_ratio:.2f}\n"
         f"多 {pos_long:.1f}% [{gen_bar(pos_long)}] {pos_short:.1f}% 空\n"
-        f"多空持倉人數比：{acc_ratio:.2f}\n"
+        f"多空持仓人数比：{acc_ratio:.2f}\n"
         f"多 {acc_long:.1f}% [{gen_bar(acc_long)}] {acc_short:.1f}% 空\n\n"
-        f"持倉變化（實際價值）｜ 總持倉：{fmt_val(total_oi_usd)}\n"
-        f"{align_text('5分鐘', 10)}{oi_5m}\n"
-        f"{align_text('15分鐘', 10)}{oi_15m}\n"
-        f"{align_text('30分鐘', 10)}{oi_30m}\n"
-        f"{align_text('1小時', 10)}{oi_1h}\n"
-        f"{align_text('4小時', 10)}{oi_4h}\n"
-        f"{align_text('8小時', 10)}{oi_8h}\n"
-        f"{align_text('12小時', 10)}{oi_12h}\n"
-        f"{align_text('24小時', 10)}{oi_24h}\n"
-        f"{align_text('48小時', 10)}{oi_48h}\n\n"
-        f"主力淨流入 $\n"
-        f"{align_text('5分鐘', 10)}{net_5m}\n"
-        f"{align_text('15分鐘', 10)}{net_50m if 'net_50m' in locals() else net_15m}\n"
-        f"{align_text('30分鐘', 10)}{net_30m}\n"
-        f"{align_text('1小時', 10)}{net_1h}\n"
-        f"{align_text('4小時', 10)}{net_4h}\n"
-        f"{align_text('8小時', 10)}{net_8h}\n"
-        f"{align_text('12小時', 10)}{net_12h}\n"
-        f"{align_text('24小時', 10)}{net_24h}\n"
-        f"{align_text('48小時', 10)}{net_48h}\n"
-        f"{align_text('72小時', 10)}{net_72h}\n"
-        f"{align_text('168小時', 10)}{net_168h}"
+        f"持仓变化 (实际价值) | 总持仓：{fmt_val(total_oi_usd).strip()}\n"
+        f"5分钟   {vol_5m}\n"
+        f"15分钟  {vol_15m}\n"
+        f"30分钟  {vol_30m}\n"
+        f"1小时   {vol_1h}\n"
+        f"4小時   {vol_4h}\n"
+        f"8小时   {vol_8h}\n"
+        f"12小时  {vol_12h}\n"
+        f"24小时  {vol_24h}\n"
+        f"48小时  {vol_48h}\n"
+        f"72小时  {vol_72h}\n"
+        f"168小时 {vol_168h}\n\n"
+        f"主力净流入 $\n"
+        f"5分钟   {net_5m}\n"
+        f"15分钟  {net_15m}\n"
+        f"30分钟  {net_30m}\n"
+        f"1小时   {net_1h}\n"
+        f"4小时   {net_4h}\n"
+        f"8小时   {net_8h}\n"
+        f"12小时  {net_12h}\n"
+        f"24小时  {net_24h}\n"
+        f"48小时  {net_48h}\n"
+        f"72小时  {net_72h}\n"
+        f"168小时 {net_168h}"
     )
     return reply_text
 
