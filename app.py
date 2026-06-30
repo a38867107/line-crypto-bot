@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""
-gitlawb × Nansen: Smart Developer Intelligence (LINE Bot Edition)
-================================================================
-"""
-
-import subprocess
-import json
 import os
 import sys
+import subprocess
+import json
 from pathlib import Path
-import requests  # 新增：用於發送資料給 LINE
+import requests
+from flask import Flask, request, abort
+
+app = Flask(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-
 CHAIN   = "ethereum"
-GL_BIN  = "/Users/kevin/Projects/gitlawb/target/release/gl" # 注意：Render 環境如果沒有這個執行檔，make_did 會回傳預設值，不影響 Nansen 運作
+GL_BIN  = "/opt/render/project/src/gl" # 雲端 fallback
 N_DEVS  = 5   
 
 REPOS = [
@@ -25,13 +22,11 @@ REPOS = [
     "chain-analytics/onchain-indexer",
 ]
 
-# ── LINE Bot Config ──────────────────────────────────────────────────────────
-# 請確保在 Render 的 Environment Variables 設定這兩個變數
+# ── LINE / Nansen Config ──────────────────────────────────────────────────────
 LINE_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_USER_ID = os.environ.get("LINE_USER_ID") # 你的個人 LINE User ID (或是群組 ID)
+LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
-# ── Nansen CLI ────────────────────────────────────────────────────────────────
-
+# ── Nansen 核心邏輯 (與前面相同) ───────────────────────────────────────────────
 api_calls = []
 
 def nansen(subcmd: str) -> dict | None:
@@ -46,25 +41,14 @@ def nansen(subcmd: str) -> dict | None:
             code = parsed.get("code", "")
             if code == "CREDITS_EXHAUSTED":
                 send_to_line("🚨 Nansen API 額度已耗盡！")
-                sys.exit(1)
-            elif code == "FORBIDDEN":
-                return None  
+                return None
         return parsed
     except json.JSONDecodeError:
         return None
 
-def gl(subcmd: str) -> str:
-    # 確保在雲端環境找不到此路徑時不會直接崩潰
-    if not os.path.exists(GL_BIN):
-        return "did:key:mock_generated_fallback_for_render"
-    r = subprocess.run(f"{GL_BIN} {subcmd}", shell=True, capture_output=True, text=True)
-    return r.stdout.strip()
-
 def f(val) -> float:
     try: return float(val or 0)
     except: return 0.0
-
-# ── Step 1: Pull smart money context + trader addresses ───────────────────────
 
 def get_smart_money_tokens() -> set[str]:
     data = nansen(f"research smart-money holdings --chain {CHAIN} --limit 20 --fields token_symbol,value_usd,holders_count")
@@ -100,8 +84,6 @@ def get_trader_addresses() -> list[dict]:
                 })
             if len(traders) >= N_DEVS: break
     return traders
-
-# ── Step 2: Profile each wallet ───────────────────────────────────────────────
 
 def profile_balance(address: str, sm_tokens: set[str], chain: str = CHAIN) -> tuple[int, float, int]:
     data = nansen(f"research profiler balance --address {address} --chain {chain} --limit 20 --fields token_symbol,value_usd")
@@ -148,24 +130,11 @@ def profile_pnl(address: str, chain: str = CHAIN) -> tuple[int, float]:
     else:                 pts = 0
     return pts, pnl
 
-def make_did(tag: str) -> str:
-    if not os.path.exists(GL_BIN):
-        return f"did:key:mock_{tag}_z6Mk"
-    dir_path = f"/tmp/gitlawb-poc-{tag}"
-    Path(dir_path).mkdir(exist_ok=True)
-    gl(f"identity new --dir {dir_path} --force")
-    did = gl(f"identity show --dir {dir_path}")
-    return did if did.startswith("did:key:") else "did:key:[generated]"
-
-# ── LINE Notification Function ────────────────────────────────────────────────
-
 def send_to_line(text_message: str):
-    """將文字訊息透過 LINE Messaging API 推送給指定用戶"""
+    """主動推送訊息至 LINE"""
     if not LINE_ACCESS_TOKEN or not LINE_USER_ID:
-        print("⚠️ 缺少 LINE 金鑰或 User ID，僅在本地 Print：")
-        print(text_message)
-        return
-
+        print("⚠️ 缺少 LINE 金鑰或 User ID")
+        return False
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -173,32 +142,20 @@ def send_to_line(text_message: str):
     }
     payload = {
         "to": LINE_USER_ID,
-        "messages": [
-            {
-                "type": "text",
-                "text": text_message
-            }
-        ]
+        "messages": [{"type": "text", "text": text_message}]
     }
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            print("✅ 數據成功同步至手機 LINE！")
-        else:
-            print(f"❌ LINE 傳送失敗: {response.status_code}, {response.text}")
-    except Exception as e:
-        print(f"❌ 網路異常無法連接 LINE API: {e}")
+    res = requests.post(url, headers=headers, json=payload)
+    return res.status_code == 200
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-def main():
-    # 用一個 list 來收集所有要發進 LINE 的文字行
-    line_report = []
+def run_whale_tracking_logic():
+    """執行大戶追蹤並組裝訊息"""
+    global api_calls
+    api_calls = [] # 重設計數器
     
+    line_report = []
     line_report.append("🐳 【Nansen 大戶建倉與聰明錢情報】")
     line_report.append("=========================")
 
-    # 1. Smart money context
     sm_tokens  = get_smart_money_tokens()
     sm_netflow = get_smart_money_netflow()
 
@@ -211,21 +168,17 @@ def main():
             line_report.append(f" ❖ {sym:<6} | +${nf:,.0f} ({tc}人)")
     line_report.append("")
 
-    # 2. Get trader addresses
     traders = get_trader_addresses()
     if not traders:
-        send_to_line("🚨 無法獲取大戶地址，請檢查 Nansen API 金鑰")
-        sys.exit(1)
+        return "🚨 無法獲取大戶地址，請檢查 Nansen API 金鑰"
 
-    # 3. Profile each trader
     results = []
     for i, t in enumerate(traders):
         addr  = t["address"]
         label = t["label"]
-        repo  = REPOS[i % len(REPOS)]
         short = addr[:6] + "..." + addr[-4:]
-
         chain = t.get("chain", CHAIN)
+        
         port_pts, portfolio_usd, overlap = profile_balance(addr, sm_tokens, chain)
         tx_pts, tx_count, volume_usd     = profile_transactions(addr, chain)
         pnl_pts, pnl_usd                 = profile_pnl(addr, chain)
@@ -233,20 +186,17 @@ def main():
 
         results.append({
             "label":   label,
-            "short":   short,
-            "bought":  t["bought"],
             "portfolio_usd": portfolio_usd,
             "tx_count":      tx_count,
             "overlap":       overlap,
             "total":         total,
+            "bought":        t["bought"]
         })
 
     results.sort(key=lambda x: x["total"], reverse=True)
 
-    # 4. Format Leaderboard for LINE
     line_report.append("🏆 聰明大戶積分榜 (資產/活動/PnL總分)")
     line_report.append("-------------------------")
-    
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     for i, r in enumerate(results):
         line_report.append(f"{medals[i]} {r['label']}")
@@ -259,13 +209,34 @@ def main():
         line_report.append("")
 
     line_report.append(f"📊 總計調用 Nansen API: {len(api_calls)} 次")
-    
-    # 將所有行組合，並透過 LINE Bot 推送
-    full_message = "\n".join(line_report)
-    send_to_line(full_message)
+    return "\n".join(line_report)
+
+# ── Flask 路由 ────────────────────────────────────────────────────────────────
+
+@app.route("/", methods=['GET'])
+def index():
+    # 讓 Render 檢查健康度用 (Health Check)，確保能成功部署不崩潰
+    return "LINE Crypto Bot Server is running!", 200
+
+@app.route("/trigger", methods=['GET', 'POST'])
+def trigger_report():
+    """手動觸發路由：只要用瀏覽器打開網址 https://你的域名.render.com/trigger 
+    就會立刻執行追蹤，並把報告發到你的 LINE 手機上"""
+    report_content = run_whale_tracking_logic()
+    success = send_to_line(report_content)
+    if success:
+        return "✅ 大戶建倉情報已成功發送到你的 LINE 手機上！", 200
+    else:
+        return "❌ 傳送失敗，請檢查 Render 上的環境變數設定。", 500
+
+@app.route("/webhook", methods=['POST'])
+def callback():
+    """如果你未來想要實現：在 LINE 聊天室輸入「查大戶」，機器人就回覆訊息，
+    就在這裡寫你的 LINE Webhook 處理邏輯"""
+    # 這裡可以保留你原本的 Line Bot 簽章驗證與回覆代碼
+    return 'OK', 200
 
 if __name__ == "__main__":
-    if not os.environ.get("NANSEN_API_KEY"):
-        print("ERROR: set NANSEN_API_KEY first")
-        sys.exit(1)
-    main()
+    # Render 會自動給予 PORT 環境變數，預設監聽 0.0.0.0
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
